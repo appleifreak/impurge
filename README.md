@@ -13,7 +13,8 @@ Otherwise, download this repo as a zip and include the `impurge.js` or `impurge.
 ## Example
 
 ```js
-var impurge = require("impurge"); // Only necesary in node.js. In browsers, impurge is already available.
+var impurge = require("impurge-remix");
+// Only necesary in node.js. In browsers, the global variable `impurge` is already available.
 
 impurge.purge("http://imgur.com/ppFDF", function(err, images) {
 	if (err) console.error(err);
