@@ -1,89 +1,138 @@
-var cheerio = require("cheerio")
-,	request = require("request")
-impurge = []
+/**
+ * @license
+ *
+ * Impurge ~ turn imgur urls into image urls
+ * Version 0.1.0
+ * https://github.com/appleifreak/impurge
+ *
+ * Original Credits to hortinstein <https://github.com/hortinstein/impurge>
+ * Remixed by Tyler Johnson <tyler@vintyge.com>
+ *
+ */
 
-module.exports = impurge;
+;(function() {
 
-//pattern used for extraction of the links from the html
-imgur_url_pattern = RegExp("^http://((www)|(i)\.)?imgur.com/[./a-zA-Z0-9&,]+","ig")
-
-//patterns used to check URL patterns
-imgur_album_url_pattern = RegExp("^http://(?:www\.)?imgur\.com/a/([a-zA-Z0-9]+)","i")
-imgur_hashes_pattern = RegExp("imgur\.com/(([a-zA-Z0-9]{5,7}[&,]?)+)","i")
-imgur_image_pattern = RegExp("^http://(www\.)?(i\.)?imgur\.com/.{3,7}\.((jpg)|(gif))","ig")
-
-//determines the link provided to module
-determine_link_type = function  (url, callback) {
-	if ( imgur_image_pattern.exec(url) ) {
-		callback(null,'image_url',null,url);
+function isEmptyObject ( obj ) {
+	var name;
+	for ( name in obj ) {
+		return false;
 	}
-	else if ( imgur_album_url_pattern.exec(url) ) {
-		var match = imgur_album_url_pattern.exec(url)
-	    if (match){
-	    	var hashes = match[1].split(/[,&]/);
-	    }
-		callback(null,'album_url',hashes);
-	}
-	else if ( imgur_hashes_pattern.exec(url) ) {
-		var match = imgur_hashes_pattern.exec(url)
-	    if (match){
-	    	var hashes = match[1].split(/[,&]/);
-	    } 
-		callback(null,'hash_url',hashes);
-	}
-	else {
-		callback('unidentified_type');
-	}
-
+	return true;
 }
 
-impurge.purge = function  (url, callback) {
-	determine_link_type(url, function (error, type, id,url) {
-		if (error) {
-			callback(error)
+var impurge = {}
+
+impurge.types = {
+	album: {
+		pattern: new RegExp("imgur\.com/a/([a-z0-9]+)","i"),
+		url: function(match) {
+			return "http://api.imgur.com/2/album/" + match[1] + ".json";
+		},
+		extract: function(data) {
+			var links = [],
+				images = data['album']['images'];
+
+			for (var i = 0; i < images.length; i++) {
+				links.push(images[i]['links']['original']);
+			}
+
+			return links;
 		}
-		else{
+	},
+	image: {
+		pattern: new RegExp("imgur\.com/([a-z0-9]+)","i"),
+		url: function(match) {
+			return "http://api.imgur.com/2/image/" + match[1] + ".json";
+		},
+		extract: function(data) {
 			var links = [];
-			if (type === 'image_url'){
-				callback(null, [url])
-				return;
-			}
-			else if (type === 'album_url'){
-				var url = 'http://api.imgur.com/2/album/'+id+".json"
-			}
-			else if (type === 'hash_url'){
-				var url = 'http://api.imgur.com/2/image/'+id+".json"
-			}
-			else {
-				callback("unknown_link_error")
-			}
-			request(url, function  (err, res, body) {		
-				try{
-					var api_json = JSON.parse(body);	
-				}	catch (err) {
-					callback("impurge: JSON parsing error");
-				}
-				
-				for (var type in api_json){
-					//console.log(type)
-					if (type === 'image'){
-						links.push(api_json[type]['links']['original']);
-						callback(null, links ) ;
-					}
-					if (type === 'album'){
-						
-						var images_json = api_json[type]['images'];
-						for (var image in images_json){
-							//console.log(images_json[image]['links']['original']);
-							links.push(images_json[image]['links']['original']);
-						}
-						callback(null, links);
-					}
-				}
-				return;
-			})
+			links.push(data['image']['links']['original']);
+			return links;
 		}
-		//console.log("type: "+ type)
-	})
-    
+	}
 }
+
+impurge.detect_type = function(url) {
+	for (var key in this.types) {
+		var t = this.types[key],
+			m = t.pattern.exec(url),
+			r = { type: key, extract: t.extract };
+
+		if (!m) continue;
+		
+		r.match = m;
+		r.url = t.url(m);
+		return r;
+	}
+}
+
+impurge.env = "browser";
+
+impurge.req = {
+	node: function(url, cb) {
+		var m = /^http(s)?:\/\//i.exec(url),
+			http, data = "";
+		
+		if (!m) cb(new Error("Invalid URL."));
+		else if (m[1]) http = require("https");
+		else http = require("http");
+		
+		http.get(url, function(res) {
+			res.on('data', function(chunk) {
+				data += chunk.toString("utf-8");
+			});
+
+			res.on('end', function() {
+				cb(null, data);
+			});
+		}).on('error', function(e) {
+			cb(e);
+		});
+	},
+	browser: function(url, cb) {
+		var req;
+		if (window.XMLHttpRequest) { // Mozilla, Safari, ...
+			req = new XMLHttpRequest();
+		} else if (window.ActiveXObject) { // IE 8 and older
+			req = new ActiveXObject("Microsoft.XMLHTTP");
+		}
+
+		req.onreadystatechange = function() {
+			if (req.readyState === 4) {
+				cb(null, this.responseText);
+			}
+		}
+
+		req.open('GET', url);
+		req.send();
+	}
+}
+
+impurge.purge = function(url, cb) {
+	var type, apiuri;
+
+	if (cb == null) cb = function(){};
+	if (!(type = this.detect_type(url))) return cb(new Error("Could not detect url type."));
+
+	this.req[this.env](type.url, function(err, data) {
+		if (err) return cb(err);
+		
+		try { data = JSON.parse(data);
+		} catch (e) {}
+		
+		cb(null, type.extract(data));
+	});
+}
+
+if (typeof exports === 'object') {
+	impurge.env = "node";
+	module.exports = impurge;
+} else if (typeof define === 'function' && define.amd) {
+	define(function() { return impurge; });
+} else {
+	this.impurge = impurge;
+}
+
+}).call(function() {
+	return this || (typeof window !== 'undefined' ? window : global);
+}());
